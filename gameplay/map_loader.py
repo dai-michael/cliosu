@@ -59,6 +59,7 @@ def load_map(map_path: str) -> ManiaMapState:
 
     Returns:
         Map state with ``num_keys``, ``od``, and a sorted ``upcoming`` list.
+        Hit object times are converted from osu milliseconds to seconds.
 
     Raises:
         ValueError: If required difficulty fields are missing or invalid.
@@ -89,10 +90,10 @@ def load_map(map_path: str) -> ManiaMapState:
         extra = parts[5] if len(parts) > 5 else ""
         column = int(x * num_keys / 512)
 
-        start_time = float(start_time)
+        start_time = float(start_time) / 1000
         end_time = start_time
         if slider_flag & 128:  # Mask to extract slider flag
-            end_time = float(int(extra.split(":")[0]))
+            end_time = float(int(extra.split(":")[0])) / 1000
 
         upcoming.append(
             ManiaObject(

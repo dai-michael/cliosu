@@ -1,6 +1,5 @@
 import curses
 import time
-
 import vlc
 
 from gameplay.game_renderer import GameRenderer
@@ -8,20 +7,15 @@ from gameplay.input_handler import InputHandler
 from gameplay.models import (
     GameInput,
     ControlAction,
-    GameStats,
-    RenderM,
     Settings,
     Results,
     ManiaMapState,
     ManiaObject,
     Judgement,
     JUDGEMENT_ORDER,
+    GameStats,
+    RenderM,
 )
-from input_handler import InputHandler
-from game_renderer import GameRenderer
-import time
-# use vlc music player library to play music
-import vlc
 
 
 def tap_hit_error(note: ManiaObject) -> float | None:
@@ -76,8 +70,8 @@ class GameEngine:
         self.input_handler = InputHandler(self.settings.keybinds)
         self.game_renderer = GameRenderer(curses.initscr(), 4, self.settings.window_height, self.settings.window_width)
         self.visible_notes: list[ManiaObject] = []
-        self.tappable_notes: list[RenderM] = [None] * map_state.num_keys
-        self.visible_note_window = 10000 / self.settings.scroll_speed
+        self.tappable_notes: list[ManiaObject | None] = [None] * map_state.num_keys
+        self.visible_note_window = 10 / self.settings.scroll_speed
         od = self.map_state.od
         self.hit_windows: list[float] = [
             16 / 1000,
@@ -92,7 +86,7 @@ class GameEngine:
 
     def run(self) -> Results:
         # If time of first note is at start of the song, start frames earlier than the start of the song
-        if self.map_state.upcoming[0].start_time < self.visible_note_window:
+        if self.map_state.upcoming and self.map_state.upcoming[0].start_time < self.visible_note_window:
             audio_playback_delay = self.visible_note_window - self.map_state.upcoming[0].start_time
             early_start_time = time.perf_counter()
             self.start_time = early_start_time + audio_playback_delay
@@ -109,6 +103,7 @@ class GameEngine:
             relative_song_time = time.perf_counter() - self.start_time
             play = self._process_frame(relative_song_time)
 
+        return self.results
 
     def _process_frame(self,song_time: float) -> bool:
         """Renders frame at current time in the song
@@ -117,19 +112,22 @@ class GameEngine:
         self._convert_input_times(game_inputs)
         # Calculate song time as song time that game_inputs occured at
         # Handle control inputs
-        for control_input in control_inputs:
-            if control_input.action == ControlAction.QUIT:
-                return False
+        if ControlAction.QUIT in control_inputs:
+            return False
         
         # Process game actions
         self._process_key_presses(game_inputs)
         self._process_key_releases(game_inputs,song_time)
         
         # Update notes lists
-        notes_to_judge = self._refresh_active_notes(song_time)
+        notes_to_judge = self._refresh_active_notes(song_time, game_inputs)
         self._judge_notes(notes_to_judge)
 
         # Render frame using active notes list
+        render_notes = self._convert_notes_to_render_m(self.visible_notes, song_time)
+        curr_stats = GameStats(self.results.accuracy, self.results.combo)
+        pressed_columns = [column for column, game_input in game_inputs.items()] # convert gameinputs to just columns
+        self.game_renderer.render(render_notes,curr_stats, pressed_columns)
         return True
 
     def _convert_input_times(self,game_inputs: dict[int, GameInput]) -> None:
@@ -138,12 +136,18 @@ class GameEngine:
             game_input.pressed_at -= self.start_time
 
 
-    def _process_key_presses(self, game_inputs):
+    def _process_key_presses(self, game_inputs: dict[int, GameInput]) -> None:
+        miss_window = self.hit_windows[-1]
         for column, game_input in game_inputs.items():
             note = self.tappable_notes[column]
-            if note is not None and not game_input.used and note.hit_time is None:
-                note.hit_time = game_input.pressed_at
-                game_input.used = True
+            if note is None or game_input.used or note.hit_time is not None:
+                continue
+            hit_time = game_input.pressed_at
+            if abs(hit_time - note.start_time) > miss_window:
+                continue
+            note.hit_time = hit_time
+            game_input.used = True
+            self.input_handler.mark_consumed(column)
 
     def _process_key_releases(self, game_inputs: dict[int, GameInput], song_time: float) -> None:
         for column, note in enumerate(self.tappable_notes):
@@ -156,7 +160,9 @@ class GameEngine:
             ):
                 note.release_time = song_time
 
-    def _refresh_active_notes(self, song_time: float) -> list[ManiaObject]:
+    def _refresh_active_notes(
+        self, song_time: float, game_inputs: dict[int, GameInput]
+    ) -> list[ManiaObject]:
         notes_to_judge = []
         notes_to_judge += self._remove_missed_notes(song_time)
         notes_to_judge += self._remove_hit_notes()
@@ -165,15 +171,21 @@ class GameEngine:
         self._add_to_visible(song_time)
         # Add notes to tappable_notes
         self._add_to_tappable(song_time)
+        self._process_key_presses(game_inputs)
 
         return notes_to_judge
     
-    def _add_to_tappable(self, song_time:float) -> None:
+    def _add_to_tappable(self, song_time: float) -> None:
         latest_tappable_time = song_time + self.hit_windows[-1]
-        for note in self.visible_notes:
-            if note.start_time < latest_tappable_time:
-                if note.column not in self.tappable_notes and note.start_time is None:
-                    self.tappable_notes.append(note)
+        for column in range(len(self.tappable_notes)):
+            if self.tappable_notes[column] is not None:
+                continue
+            for note in self.visible_notes:
+                if note.column != column or note.hit_time is not None:
+                    continue
+                if note.start_time < latest_tappable_time:
+                    self.tappable_notes[column] = note
+                    break
 
     def _remove_missed_notes(self, curr_song_time: float) -> list[ManiaObject]:
         """
@@ -222,6 +234,7 @@ class GameEngine:
 
         self.results.hitobjects.append(note)
         self.curr_judgement = judgements[-1]
+    
 
     def _apply_judgement_counter(self, judgement: Judgement) -> None:
         counter = judgement.name.lower()
@@ -257,6 +270,18 @@ class GameEngine:
                 self.visible_notes.remove(note)
         return to_judge
 
+    def _convert_notes_to_render_m(self, notes: list[ManiaObject], song_time: float) -> list[RenderM]:
+        judgment_y = self.game_renderer.judgment_half_y
+        window = self.visible_note_window
+        render_notes: list[RenderM] = []
 
-        
+        for note in notes:
+            head_y = int(judgment_y * (1 - (note.start_time - song_time) / window))
+            if not note.is_slider:
+                render_notes.append(RenderM(head_y, note.column, head_y))
+            else:
+                tail_y = int(judgment_y * (1 - (note.end_time - song_time) / window))
+                render_notes.append(RenderM(head_y, note.column, tail_y))
+
+        return render_notes
 

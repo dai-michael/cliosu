@@ -24,9 +24,9 @@ JUDGEMENT_ORDER: tuple[Judgement, ...] = (
 
 @dataclass
 class ManiaObject:
-    start_time: float
+    start_time: float  # seconds since song start
     column: int
-    end_time: float
+    end_time: float  # seconds since song start
     hit_time: float | None = None
     release_time: float | None = None
     head_judgement: Judgement | None = None
@@ -58,7 +58,6 @@ class ControlAction(Enum):
 @dataclass
 class ControlInput:
     action: ControlAction
-
 
 # Things for renderer
 @dataclass
